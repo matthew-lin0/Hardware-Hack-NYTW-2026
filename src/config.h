@@ -5,9 +5,19 @@
 namespace Config {
 constexpr uint32_t SerialBaud = 115200;
 
+constexpr bool EnableMcp9808 = true;
+constexpr bool EnableMpu6050 = true;
+constexpr bool EnableHcSr04 = true;
+constexpr bool EnableSpeaker = true;
+constexpr bool EnableI2cScan = true;
+
 constexpr uint8_t LedOkPin = LED_BUILTIN;
 constexpr uint8_t LedWarningPin = D5;
 constexpr uint8_t LedCriticalPin = D6;
+
+constexpr uint32_t I2cSdaPin = PB9;  // Arduino header D14 / SDA
+constexpr uint32_t I2cSclPin = PB8;  // Arduino header D15 / SCL
+constexpr uint32_t I2cClockHz = 100000;
 
 constexpr uint8_t HcSr04TrigPin = D8;
 constexpr uint8_t HcSr04EchoPin = D9;
@@ -26,10 +36,8 @@ constexpr uint8_t Mpu6050Address = 0x68;
 constexpr float TiltThresholdDeg = 40.0f;
 constexpr float SpikeThresholdG = 1.8f;
 
-constexpr uint32_t TempPeriodMs = 1000;
-constexpr uint32_t DistancePeriodMs = 250;
-constexpr uint32_t MotionPeriodMs = 100;
-constexpr uint32_t MonitorPeriodMs = 250;
+constexpr uint32_t HeartbeatPeriodMs = 500;
+constexpr uint32_t ReportPeriodMs = 1000;
 constexpr uint32_t AlertCooldownMs = 1500;
+constexpr uint32_t I2cScanPeriodMs = 3000;
 }  // namespace Config
-
