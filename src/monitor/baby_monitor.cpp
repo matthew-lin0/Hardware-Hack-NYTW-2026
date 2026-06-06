@@ -25,6 +25,10 @@ AlertState BabyMonitor::evaluate(const SensorSnapshot& snapshot) const {
     state = maxSeverity(state, {AlertSeverity::Info, "distance changed"});
   }
 
+  if (snapshot.scanCycleChanged) {
+    state = maxSeverity(state, {AlertSeverity::Info, "scan cycle changed"});
+  }
+
   if (!snapshot.presenceDetected && !isnan(snapshot.distanceCm)) {
     state = maxSeverity(state, {AlertSeverity::Info, "presence zone clear"});
   }
@@ -37,4 +41,3 @@ AlertState BabyMonitor::maxSeverity(AlertState current, AlertState candidate) {
              ? candidate
              : current;
 }
-

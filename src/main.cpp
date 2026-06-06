@@ -1,4 +1,6 @@
 #include <Arduino.h>
+#include <Servo.h>
+#include <STM32FreeRTOS.h>
 #include <Wire.h>
 
 #include "audio/speaker.h"
@@ -13,342 +15,330 @@ Mcp9808 tempSensor;
 Mpu6050 motionSensor;
 HcSr04 distanceSensor;
 Speaker speaker;
+Servo scanServo;
 BabyMonitor monitor;
 
-bool tempReady = false;
-bool motionReady = false;
-bool heartbeatOn = false;
-float previousDistanceCm = NAN;
-uint32_t lastHeartbeatMs = 0;
-uint32_t lastReportMs = 0;
-uint32_t lastAlertMs = 0;
-uint32_t lastI2cScanMs = 0;
-AlertSeverity lastAlertSeverity = AlertSeverity::None;
+SensorSnapshot snapshot;
+SemaphoreHandle_t snapshotMutex;
+volatile bool servoTestRequested = false;
+constexpr uint8_t ScanAngles[Config::ServoScanSteps] = {0, 30, 60, 90, 120, 150,
+                                                        180, 150, 120, 90, 60, 30};
 
-struct SampleReport {
-  SensorSnapshot snapshot;
-  MotionReading motion;
-  const char* tempStatus = "disabled";
-  const char* motionStatus = "disabled";
-  const char* distanceStatus = "disabled";
-  bool tempValid = false;
-  bool motionValid = false;
-  bool distanceValid = false;
-};
-
-const char* enabledLabel(bool enabled) {
-  return enabled ? "enabled" : "disabled";
-}
-
-const char* severityLabel(AlertSeverity severity) {
+const __FlashStringHelper* severityName(AlertSeverity severity) {
   switch (severity) {
     case AlertSeverity::Info:
-      return "info";
+      return F("info");
     case AlertSeverity::Warning:
-      return "warning";
+      return F("warning");
     case AlertSeverity::Critical:
-      return "critical";
+      return F("critical");
     case AlertSeverity::None:
-      return "none";
+    default:
+      return F("none");
   }
-  return "unknown";
 }
 
-void printBool(const char* label, bool value) {
-  Serial.print(label);
-  Serial.print(value ? "true" : "false");
-}
-
-void printHexAddress(uint8_t address) {
-  Serial.print("0x");
-  if (address < 0x10) {
-    Serial.print("0");
-  }
-  Serial.print(address, HEX);
-}
-
-void printCsvValue(float value, uint8_t decimals) {
+void printJsonFloat(const char* key, float value, bool comma = true) {
+  Serial.print('"');
+  Serial.print(key);
+  Serial.print(F("\":"));
   if (isnan(value)) {
-    return;
+    Serial.print(F("null"));
+  } else {
+    Serial.print(value, 3);
   }
-  Serial.print(value, decimals);
+  if (comma) {
+    Serial.print(',');
+  }
 }
 
-void printCsvBool(bool value) {
-  Serial.print(value ? "1" : "0");
+void printJsonBool(const char* key, bool value, bool comma = true) {
+  Serial.print('"');
+  Serial.print(key);
+  Serial.print(F("\":"));
+  Serial.print(value ? F("true") : F("false"));
+  if (comma) {
+    Serial.print(',');
+  }
 }
 
-void printCsvHeader() {
-  if (!Config::EnableCsvOutput) {
+void printEvent(const __FlashStringHelper* event, const __FlashStringHelper* status) {
+  Serial.print(F("{\"type\":\"event\",\"event\":\""));
+  Serial.print(event);
+  Serial.print(F("\",\"status\":\""));
+  Serial.print(status);
+  Serial.println(F("\"}"));
+}
+
+void printTelemetry(const SensorSnapshot& current, const AlertState& alert) {
+  Serial.print(F("{\"type\":\"telemetry\","));
+  Serial.print(F("\"ms\":"));
+  Serial.print(millis());
+  Serial.print(',');
+  printJsonFloat("temperature_c", current.temperatureC);
+  printJsonFloat("distance_cm", current.distanceCm);
+  Serial.print(F("\"scan_angle_deg\":"));
+  Serial.print(current.scanAngleDeg);
+  Serial.print(',');
+  Serial.print(F("\"scan_step\":"));
+  Serial.print(current.scanStep);
+  Serial.print(',');
+  Serial.print(F("\"scan_cycle\":"));
+  Serial.print(current.scanCycle);
+  Serial.print(',');
+  printJsonFloat("ax_g", current.axG);
+  printJsonFloat("ay_g", current.ayG);
+  printJsonFloat("az_g", current.azG);
+  printJsonFloat("gx_dps", current.gxDps);
+  printJsonFloat("gy_dps", current.gyDps);
+  printJsonFloat("gz_dps", current.gzDps);
+  printJsonFloat("tilt_deg", current.tiltDeg);
+  printJsonBool("presence_detected", current.presenceDetected);
+  printJsonBool("distance_changed", current.distanceChanged);
+  printJsonBool("scan_cycle_changed", current.scanCycleChanged);
+  printJsonBool("tilt_detected", current.tiltDetected);
+  printJsonBool("spike_detected", current.spikeDetected);
+  Serial.print(F("\"alert_severity\":\""));
+  Serial.print(severityName(alert.severity));
+  Serial.print(F("\",\"alert_reason\":\""));
+  Serial.print(alert.reason);
+  Serial.println(F("\"}"));
+}
+
+bool commandHas(const String& command, const char* token) {
+  return command.indexOf(token) >= 0;
+}
+
+AlertSeverity parseSeverity(const String& command) {
+  if (commandHas(command, "critical")) {
+    return AlertSeverity::Critical;
+  }
+  if (commandHas(command, "warning")) {
+    return AlertSeverity::Warning;
+  }
+  if (commandHas(command, "info")) {
+    return AlertSeverity::Info;
+  }
+  return AlertSeverity::None;
+}
+
+void handleCommand(const String& command) {
+  if (command.length() == 0) {
     return;
   }
 
-  Serial.println(
-      "csv_header,sample_ms,temp_status,temp_c,temp_f,motion_status,tilt_deg,tilt,spike,"
-      "distance_status,distance_cm,presence,distance_changed,alert,reason");
-}
-
-void printI2cScan(uint32_t nowMs) {
-  if (!Config::EnableI2cScan || nowMs - lastI2cScanMs < Config::I2cScanPeriodMs) {
+  if (commandHas(command, "ping")) {
+    printEvent(F("pong"), F("ok"));
     return;
   }
 
-  lastI2cScanMs = nowMs;
-  bool foundAny = false;
+  if (commandHas(command, "speaker") || commandHas(command, "beep")) {
+    const AlertSeverity severity = parseSeverity(command);
+    speaker.play(severity == AlertSeverity::None ? AlertSeverity::Info : severity);
+    printEvent(F("speaker"), F("ok"));
+    return;
+  }
 
-  Serial.print("i2c_scan:");
-  for (uint8_t address = 0x08; address <= 0x77; ++address) {
-    Wire.beginTransmission(address);
-    if (Wire.endTransmission() == 0) {
-      Serial.print(" ");
-      printHexAddress(address);
-      foundAny = true;
+  if (commandHas(command, "servo_test")) {
+    servoTestRequested = true;
+    printEvent(F("servo_test"), F("queued"));
+    return;
+  }
+
+  printEvent(F("command"), F("unknown"));
+}
+
+template <typename Mutator>
+void updateSnapshot(Mutator mutator) {
+  if (xSemaphoreTake(snapshotMutex, portMAX_DELAY) == pdTRUE) {
+    mutator(snapshot);
+    xSemaphoreGive(snapshotMutex);
+  }
+}
+
+SensorSnapshot copySnapshot() {
+  SensorSnapshot copy;
+  if (xSemaphoreTake(snapshotMutex, portMAX_DELAY) == pdTRUE) {
+    copy = snapshot;
+    xSemaphoreGive(snapshotMutex);
+  }
+  return copy;
+}
+
+void tempTask(void*) {
+  for (;;) {
+    float temperatureC = NAN;
+    if (tempSensor.readTemperatureC(temperatureC)) {
+      if (temperatureC < -40.0f || temperatureC > 125.0f) {
+        vTaskDelay(pdMS_TO_TICKS(Config::TempPeriodMs));
+        continue;
+      }
+      updateSnapshot([&](SensorSnapshot& state) { state.temperatureC = temperatureC; });
     }
+    vTaskDelay(pdMS_TO_TICKS(Config::TempPeriodMs));
   }
-
-  if (!foundAny) {
-    Serial.print(" none");
-  }
-  Serial.println();
 }
 
-void printBootStatus() {
-  Serial.println();
-  Serial.println("boot: NYTW monitor bring-up");
-  Serial.print("serial: ");
-  Serial.println(Config::SerialBaud);
-  Serial.print("mcp9808: ");
-  Serial.println(Config::EnableMcp9808 ? (tempReady ? "ready" : "missing") : "disabled");
-  Serial.print("mpu6050: ");
-  Serial.println(Config::EnableMpu6050 ? (motionReady ? "ready" : "missing") : "disabled");
-  Serial.print("hcsr04: ");
-  Serial.println(enabledLabel(Config::EnableHcSr04));
-  Serial.print("speaker: ");
-  Serial.println(enabledLabel(Config::EnableSpeaker));
-  Serial.print("i2c_scan: ");
-  Serial.println(enabledLabel(Config::EnableI2cScan));
-  Serial.print("csv_output: ");
-  Serial.println(enabledLabel(Config::EnableCsvOutput));
-  Serial.println("status: board firmware is alive");
-  printCsvHeader();
-}
+void distanceTask(void*) {
+  float previousCycle[Config::ServoScanSteps];
+  float currentCycle[Config::ServoScanSteps];
+  bool hasPreviousCycle = false;
+  uint8_t scanStep = 0;
+  uint32_t scanCycle = 0;
 
-void updateHeartbeat(uint32_t nowMs) {
-  if (nowMs - lastHeartbeatMs < Config::HeartbeatPeriodMs) {
-    return;
+  for (uint8_t i = 0; i < Config::ServoScanSteps; ++i) {
+    previousCycle[i] = NAN;
+    currentCycle[i] = NAN;
   }
 
-  heartbeatOn = !heartbeatOn;
-  digitalWrite(Config::LedOkPin, heartbeatOn ? HIGH : LOW);
-  lastHeartbeatMs = nowMs;
-}
-
-void sampleTemperature(SampleReport& report) {
-  if (!Config::EnableMcp9808) {
-    return;
-  }
-
-  if (!tempReady) {
-    tempReady = tempSensor.begin(Config::Mcp9808Address);
-  }
-
-  if (!tempReady) {
-    report.tempStatus = "missing";
-    return;
-  }
-
-  float temperatureC = NAN;
-  if (!tempSensor.readTemperatureC(temperatureC)) {
-    report.tempStatus = "read_error";
-    tempReady = false;
-    return;
-  }
-
-  if (temperatureC < -40.0f || temperatureC > 125.0f) {
-    report.tempStatus = "out_of_range";
-    tempReady = false;
-    return;
-  }
-
-  report.tempStatus = "ready";
-  report.tempValid = true;
-  report.snapshot.temperatureC = temperatureC;
-}
-
-void sampleMotion(SampleReport& report) {
-  if (!Config::EnableMpu6050) {
-    return;
-  }
-
-  if (!motionReady) {
-    motionReady = motionSensor.begin(Config::Mpu6050Address);
-  }
-
-  if (!motionReady) {
-    report.motionStatus = "missing";
-    return;
-  }
-
-  if (!motionSensor.read(report.motion, Config::TiltThresholdDeg, Config::SpikeThresholdG)) {
-    report.motionStatus = "read_error";
-    return;
-  }
-
-  report.motionStatus = "ready";
-  report.motionValid = true;
-  report.snapshot.tiltDetected = report.motion.tiltDetected;
-  report.snapshot.spikeDetected = report.motion.spikeDetected;
-}
-
-void sampleDistance(SampleReport& report) {
-  if (!Config::EnableHcSr04) {
-    return;
-  }
-
-  float distanceCm = NAN;
-  if (!distanceSensor.readDistanceCm(distanceCm, Config::HcSr04TimeoutUs)) {
-    report.distanceStatus = "timeout";
-    report.snapshot.distanceCm = NAN;
-    return;
-  }
-
-  report.distanceStatus = "ready";
-  report.distanceValid = true;
-  report.snapshot.distanceCm = distanceCm;
-  report.snapshot.presenceDetected =
-      distanceCm >= Config::PresenceMinCm && distanceCm <= Config::PresenceMaxCm;
-  report.snapshot.distanceChanged =
-      !isnan(previousDistanceCm) &&
-      fabs(distanceCm - previousDistanceCm) >= Config::DistanceChangeAlertCm;
-  previousDistanceCm = distanceCm;
-}
-
-SampleReport sampleSensors() {
-  SampleReport report;
-  sampleTemperature(report);
-  sampleMotion(report);
-  sampleDistance(report);
-  return report;
-}
-
-void updateAlertOutputs(const AlertState& alert, uint32_t nowMs) {
-  const bool showWarning =
-      alert.severity == AlertSeverity::Info || alert.severity == AlertSeverity::Warning;
-  digitalWrite(Config::LedWarningPin, showWarning ? HIGH : LOW);
-  digitalWrite(Config::LedCriticalPin, alert.severity == AlertSeverity::Critical ? HIGH : LOW);
-
-  if (alert.severity == AlertSeverity::None) {
-    if (Config::EnableSpeaker && lastAlertSeverity != AlertSeverity::None) {
-      speaker.play(AlertSeverity::None);
+  for (;;) {
+    if (servoTestRequested) {
+      servoTestRequested = false;
+      printEvent(F("servo_test"), F("starting"));
+      for (uint8_t i = 0; i < Config::ServoScanSteps; ++i) {
+        const uint8_t angleDeg = ScanAngles[i];
+        scanServo.write(angleDeg);
+        updateSnapshot([&](SensorSnapshot& state) {
+          state.scanAngleDeg = angleDeg;
+          state.scanStep = i;
+        });
+        vTaskDelay(pdMS_TO_TICKS(Config::ServoSettleMs));
+      }
+      printEvent(F("servo_test"), F("done"));
     }
-    lastAlertSeverity = AlertSeverity::None;
-    return;
-  }
 
-  if (!Config::EnableSpeaker) {
-    lastAlertSeverity = alert.severity;
-    return;
-  }
+    const uint8_t angleDeg = ScanAngles[scanStep];
+    scanServo.write(angleDeg);
+    vTaskDelay(pdMS_TO_TICKS(Config::ServoSettleMs));
 
-  const bool shouldRepeat = nowMs - lastAlertMs >= Config::AlertCooldownMs;
-  if (alert.severity != lastAlertSeverity || shouldRepeat) {
-    speaker.play(alert.severity);
-    lastAlertMs = millis();
+    float distanceCm = NAN;
+    if (distanceSensor.readDistanceCm(distanceCm, Config::HcSr04TimeoutUs)) {
+      const bool presenceDetected =
+          distanceCm >= Config::PresenceMinCm && distanceCm <= Config::PresenceMaxCm;
+      currentCycle[scanStep] = distanceCm;
+      bool distanceChanged = false;
+
+      if (hasPreviousCycle && !isnan(previousCycle[scanStep]) &&
+          fabs(distanceCm - previousCycle[scanStep]) >= Config::DistanceChangeAlertCm) {
+        distanceChanged = true;
+      }
+
+      updateSnapshot([&](SensorSnapshot& state) {
+        state.distanceCm = distanceCm;
+        state.scanAngleDeg = angleDeg;
+        state.scanStep = scanStep;
+        state.scanCycle = scanCycle;
+        state.presenceDetected = presenceDetected;
+        state.distanceChanged = distanceChanged;
+      });
+    }
+
+    scanStep++;
+    if (scanStep >= Config::ServoScanSteps) {
+      bool scanCycleChanged = false;
+      if (hasPreviousCycle) {
+        for (uint8_t i = 0; i < Config::ServoScanSteps; ++i) {
+          if (!isnan(currentCycle[i]) && !isnan(previousCycle[i]) &&
+              fabs(currentCycle[i] - previousCycle[i]) >= Config::DistanceChangeAlertCm) {
+            scanCycleChanged = true;
+            break;
+          }
+        }
+      }
+
+      for (uint8_t i = 0; i < Config::ServoScanSteps; ++i) {
+        previousCycle[i] = currentCycle[i];
+        currentCycle[i] = NAN;
+      }
+
+      hasPreviousCycle = true;
+      scanStep = 0;
+      scanCycle++;
+
+      updateSnapshot([&](SensorSnapshot& state) {
+        state.scanCycle = scanCycle;
+        state.scanCycleChanged = scanCycleChanged;
+      });
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(Config::DistancePeriodMs));
   }
-  lastAlertSeverity = alert.severity;
 }
 
-void printReport(const SampleReport& report, const AlertState& alert, uint32_t nowMs) {
-  const float temperatureF = report.tempValid ? report.snapshot.temperatureC * 9.0f / 5.0f + 32.0f
-                                             : NAN;
-
-  Serial.println();
-  Serial.print("sample_ms: ");
-  Serial.println(nowMs);
-
-  Serial.print("mcp9808: ");
-  Serial.println(report.tempStatus);
-  Serial.print("temp: ");
-  if (report.tempValid) {
-    Serial.print(report.snapshot.temperatureC, 2);
-    Serial.print(" C / ");
-    Serial.print(temperatureF, 2);
-    Serial.println(" F");
-  } else {
-    Serial.println(report.tempStatus);
+void motionTask(void*) {
+  for (;;) {
+    MotionReading reading;
+    if (motionSensor.read(reading, Config::TiltThresholdDeg, Config::SpikeThresholdG)) {
+      updateSnapshot([&](SensorSnapshot& state) {
+        state.axG = reading.axG;
+        state.ayG = reading.ayG;
+        state.azG = reading.azG;
+        state.gxDps = reading.gxDps;
+        state.gyDps = reading.gyDps;
+        state.gzDps = reading.gzDps;
+        state.tiltDeg = reading.tiltDeg;
+        state.tiltDetected = reading.tiltDetected;
+        state.spikeDetected = reading.spikeDetected;
+      });
+    }
+    vTaskDelay(pdMS_TO_TICKS(Config::MotionPeriodMs));
   }
+}
 
-  Serial.print("mpu6050: ");
-  Serial.println(report.motionStatus);
-  Serial.print("motion: ");
-  if (report.motionValid) {
-    Serial.print("tilt_deg=");
-    Serial.print(report.motion.tiltDeg, 1);
-    Serial.print(" ");
-    printBool("tilt=", report.motion.tiltDetected);
-    Serial.print(" ");
-    printBool("spike=", report.motion.spikeDetected);
-    Serial.print(" ax=");
-    Serial.print(report.motion.axG, 2);
-    Serial.print(" ay=");
-    Serial.print(report.motion.ayG, 2);
-    Serial.print(" az=");
-    Serial.println(report.motion.azG, 2);
-  } else {
-    Serial.println(report.motionStatus);
+void monitorTask(void*) {
+  AlertSeverity lastSeverity = AlertSeverity::None;
+  uint32_t lastAlertMs = 0;
+  uint32_t lastTelemetryMs = 0;
+
+  for (;;) {
+    const SensorSnapshot current = copySnapshot();
+    const AlertState alert = monitor.evaluate(current);
+
+    digitalWrite(Config::LedOkPin, alert.severity == AlertSeverity::None ? HIGH : LOW);
+    digitalWrite(Config::LedWarningPin, alert.severity == AlertSeverity::Warning ? HIGH : LOW);
+    digitalWrite(Config::LedCriticalPin, alert.severity == AlertSeverity::Critical ? HIGH : LOW);
+
+    const uint32_t nowMs = millis();
+    if (nowMs - lastTelemetryMs >= Config::TelemetryPeriodMs) {
+      printTelemetry(current, alert);
+      lastTelemetryMs = nowMs;
+    }
+
+    if (alert.severity == AlertSeverity::None) {
+      if (lastSeverity != AlertSeverity::None) {
+        speaker.play(AlertSeverity::None);
+      }
+    } else {
+      if (alert.severity != lastSeverity || nowMs - lastAlertMs >= Config::AlertCooldownMs) {
+        speaker.play(alert.severity);
+        lastAlertMs = nowMs;
+      }
+    }
+
+    lastSeverity = alert.severity;
+    vTaskDelay(pdMS_TO_TICKS(Config::MonitorPeriodMs));
   }
+}
 
-  Serial.print("hcsr04: ");
-  Serial.println(report.distanceStatus);
-  Serial.print("distance: ");
-  if (report.distanceValid) {
-    Serial.print(report.snapshot.distanceCm, 1);
-    Serial.print(" cm ");
-    printBool("presence=", report.snapshot.presenceDetected);
-    Serial.print(" ");
-    printBool("changed=", report.snapshot.distanceChanged);
-    Serial.println();
-  } else {
-    Serial.println(report.distanceStatus);
+void serialCommandTask(void*) {
+  String line;
+  line.reserve(96);
+
+  for (;;) {
+    while (Serial.available() > 0) {
+      const char c = static_cast<char>(Serial.read());
+      if (c == '\n' || c == '\r') {
+        handleCommand(line);
+        line = "";
+      } else if (line.length() < 160) {
+        line += c;
+      } else {
+        line = "";
+        printEvent(F("command"), F("too_long"));
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(25));
   }
-
-  Serial.print("alert: ");
-  Serial.print(severityLabel(alert.severity));
-  Serial.print(" reason=");
-  Serial.println(alert.reason);
-
-  if (Config::EnableCsvOutput) {
-    Serial.print("csv,");
-    Serial.print(nowMs);
-    Serial.print(",");
-    Serial.print(report.tempStatus);
-    Serial.print(",");
-    printCsvValue(report.snapshot.temperatureC, 2);
-    Serial.print(",");
-    printCsvValue(temperatureF, 2);
-    Serial.print(",");
-    Serial.print(report.motionStatus);
-    Serial.print(",");
-    printCsvValue(report.motionValid ? report.motion.tiltDeg : NAN, 1);
-    Serial.print(",");
-    printCsvBool(report.motionValid && report.motion.tiltDetected);
-    Serial.print(",");
-    printCsvBool(report.motionValid && report.motion.spikeDetected);
-    Serial.print(",");
-    Serial.print(report.distanceStatus);
-    Serial.print(",");
-    printCsvValue(report.snapshot.distanceCm, 1);
-    Serial.print(",");
-    printCsvBool(report.distanceValid && report.snapshot.presenceDetected);
-    Serial.print(",");
-    printCsvBool(report.distanceValid && report.snapshot.distanceChanged);
-    Serial.print(",");
-    Serial.print(severityLabel(alert.severity));
-    Serial.print(",");
-    Serial.println(alert.reason);
-  }
-
-  printI2cScan(nowMs);
 }
 }  // namespace
 
@@ -360,52 +350,26 @@ void setup() {
   pinMode(Config::LedWarningPin, OUTPUT);
   pinMode(Config::LedCriticalPin, OUTPUT);
 
-  Serial.println();
-  Serial.println("boot: STM32 serial is online");
-
   Wire.setSDA(Config::I2cSdaPin);
   Wire.setSCL(Config::I2cSclPin);
   Wire.begin();
   Wire.setClock(Config::I2cClockHz);
-  Serial.print("boot: I2C bus initialized at ");
-  Serial.print(Config::I2cClockHz);
-  Serial.println(" Hz");
-  printCsvHeader();
+  speaker.begin(Config::SpeakerPin);
+  distanceSensor.begin(Config::HcSr04TrigPin, Config::HcSr04EchoPin);
+  scanServo.attach(Config::ServoPin);
+  scanServo.write(ScanAngles[0]);
 
-  if (Config::EnableSpeaker) {
-    speaker.begin(Config::SpeakerPin);
-    Serial.println("boot: speaker initialized");
-  }
+  printEvent(F("boot"), F("starting"));
+  printEvent(F("mcp9808"), tempSensor.begin(Config::Mcp9808Address) ? F("ready") : F("missing"));
+  printEvent(F("mpu6050"), motionSensor.begin(Config::Mpu6050Address) ? F("ready") : F("missing"));
 
-  if (Config::EnableHcSr04) {
-    distanceSensor.begin(Config::HcSr04TrigPin, Config::HcSr04EchoPin);
-    Serial.println("boot: HC-SR04 pins initialized");
-  }
-
-  if (Config::EnableMcp9808) {
-    Serial.println("boot: checking MCP9808");
-    tempReady = tempSensor.begin(Config::Mcp9808Address);
-  }
-
-  if (Config::EnableMpu6050) {
-    Serial.println("boot: checking MPU6050");
-    motionReady = motionSensor.begin(Config::Mpu6050Address);
-  }
-
-  printBootStatus();
+  snapshotMutex = xSemaphoreCreateMutex();
+  xTaskCreate(tempTask, "temp", 256, nullptr, 1, nullptr);
+  xTaskCreate(distanceTask, "distance", 256, nullptr, 1, nullptr);
+  xTaskCreate(motionTask, "motion", 256, nullptr, 1, nullptr);
+  xTaskCreate(monitorTask, "monitor", 512, nullptr, 2, nullptr);
+  xTaskCreate(serialCommandTask, "serial", 384, nullptr, 1, nullptr);
+  vTaskStartScheduler();
 }
 
-void loop() {
-  const uint32_t nowMs = millis();
-  updateHeartbeat(nowMs);
-
-  if (nowMs - lastReportMs < Config::ReportPeriodMs) {
-    return;
-  }
-  lastReportMs = nowMs;
-
-  const SampleReport report = sampleSensors();
-  const AlertState alert = monitor.evaluate(report.snapshot);
-  updateAlertOutputs(alert, nowMs);
-  printReport(report, alert, nowMs);
-}
+void loop() {}

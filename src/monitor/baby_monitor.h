@@ -12,8 +12,19 @@ enum class AlertSeverity : uint8_t {
 struct SensorSnapshot {
   float temperatureC = NAN;
   float distanceCm = NAN;
+  uint8_t scanAngleDeg = 0;
+  uint8_t scanStep = 0;
+  uint32_t scanCycle = 0;
+  float axG = NAN;
+  float ayG = NAN;
+  float azG = NAN;
+  float gxDps = NAN;
+  float gyDps = NAN;
+  float gzDps = NAN;
+  float tiltDeg = NAN;
   bool presenceDetected = false;
   bool distanceChanged = false;
+  bool scanCycleChanged = false;
   bool tiltDetected = false;
   bool spikeDetected = false;
 };
@@ -30,4 +41,3 @@ class BabyMonitor {
  private:
   static AlertState maxSeverity(AlertState current, AlertState candidate);
 };
-

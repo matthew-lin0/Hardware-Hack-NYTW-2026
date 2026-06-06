@@ -1,9 +1,17 @@
 # Hardware Hack NYTW 2026
 
-STM32-based nursery environment and movement monitor prototype for the NYTW hardware hack.
+STM32-based privacy-preserving nursery environment and activity monitor prototype for the NYTW
+hardware hack.
 
 This is a learning prototype, not a medical device or safety-critical baby monitor. Keep all
 electronics, wires, batteries, and small parts outside any crib or sleep area.
+
+The prototype has two layers:
+
+- Firmware on the microcontroller reads sensors, drives LEDs/speaker, and exchanges newline JSON
+  over Serial.
+- A host app on a laptop or Raspberry Pi parses telemetry, smooths values, classifies readable
+  states, logs data, and sends demo commands back to the board.
 
 ## Hardware
 
@@ -11,6 +19,7 @@ electronics, wires, batteries, and small parts outside any crib or sleep area.
 - MPU-6050 accelerometer and gyroscope
 - HC-SR04 ultrasonic distance sensor
 - MCP9808 temperature sensor
+- SG90 or compatible servo for ultrasonic scanning
 - Adafruit STEMMA speaker
 - Breadboard, jumper wires, LEDs, and resistors
 
@@ -18,7 +27,9 @@ electronics, wires, batteries, and small parts outside any crib or sleep area.
 
 ```text
 .
-├── .github/workflows/build.yml
+├── host/
+│   ├── monitor.py
+│   └── requirements.txt
 ├── src/
 │   ├── config.h
 │   ├── main.cpp
@@ -41,28 +52,44 @@ electronics, wires, batteries, and small parts outside any crib or sleep area.
 
 ## Behavior
 
-- The firmware starts in a simple bring-up loop, so missing sensors print as missing/timeout and
-  do not stop the board.
-- The onboard LED blinks as a heartbeat when firmware is alive.
 - MCP9808 warns at 22 C and marks critical at 25 C.
 - MPU-6050 detects tilt at 40 degrees and acceleration spikes.
-- HC-SR04 marks the presence zone active when something is within 5-55 cm.
-- Speaker plays info, warning, and critical tone patterns when enabled.
+- HC-SR04 is mounted on a servo and scans a 180 degree field in 30 degree increments.
+- A scan cycle uses 12 readings in a smooth ping-pong pattern:
+  `0, 30, 60, 90, 120, 150, 180, 150, 120, 90, 60, 30`.
+- After every 12-reading cycle, the firmware compares the new scan against the previous scan and
+  flags a change when any matching point differs by at least 15 cm.
+- The current scan point marks the presence zone active when something is within 5-55 cm.
+- Speaker plays info, warning, and critical tone patterns.
 - Speaker output is explicitly silenced when the alert state clears.
 - `baby_monitor` ranks alerts so critical conditions win over warning and info states.
+- Firmware emits one JSON object per line for host parsing.
 
-Edit pins, thresholds, feature flags, and report timing in `src/config.h`.
+Edit pins, thresholds, scan settings, and task periods in `src/config.h`.
 
-Feature flags in `src/config.h` let you test one part at a time:
+## Serial Protocol
 
-```cpp
-constexpr bool EnableMcp9808 = true;
-constexpr bool EnableMpu6050 = true;
-constexpr bool EnableHcSr04 = true;
-constexpr bool EnableSpeaker = true;
-constexpr bool EnableI2cScan = true;
-constexpr bool EnableCsvOutput = true;
+Firmware telemetry is newline-delimited JSON:
+
+```json
+{"type":"telemetry","ms":12345,"temperature_c":23.125,"distance_cm":31.200,"scan_angle_deg":90,"scan_step":3,"scan_cycle":4,"ax_g":0.010,"ay_g":0.030,"az_g":0.990,"gx_dps":0.120,"gy_dps":0.000,"gz_dps":-0.240,"tilt_deg":2.100,"presence_detected":true,"distance_changed":false,"scan_cycle_changed":false,"tilt_detected":false,"spike_detected":false,"alert_severity":"warning","alert_reason":"temperature warm"}
 ```
+
+Startup and command responses are event packets:
+
+```json
+{"type":"event","event":"mpu6050","status":"ready"}
+```
+
+The host can send command packets back to firmware:
+
+```json
+{"cmd":"ping"}
+{"cmd":"speaker","severity":"warning"}
+{"cmd":"servo_test"}
+```
+
+Supported speaker severities are `info`, `warning`, and `critical`.
 
 ## Build
 
@@ -84,76 +111,40 @@ Open serial logs:
 pio device monitor
 ```
 
-If PlatformIO does not auto-pick the port, use the ST-LINK port directly:
+## Host App
+
+Install host dependencies:
 
 ```bash
-pio device monitor --port /dev/cu.usbmodem1103 --baud 115200
+python3 -m pip install -r host/requirements.txt
 ```
 
-## Bring-Up Flow
+Run the monitor. It will auto-pick a likely serial port if possible:
 
-1. Plug in only the STM32 over USB.
-2. Build and upload:
+```bash
+python3 host/monitor.py
+```
 
-   ```bash
-   pio run --target upload
-   ```
+Or pass a port explicitly:
 
-3. Open serial monitor:
+```bash
+python3 host/monitor.py --port /dev/tty.usbmodem1101
+```
 
-   ```bash
-   pio device monitor --port /dev/cu.usbmodem1103 --baud 115200
-   ```
+The app prints smoothed temperature, distance, tilt, readable state labels, and alert reasons. It
+also prints the current scanner angle/cycle state and appends structured records to
+`logs/monitor.jsonl` by default.
 
-4. Confirm:
-
-   ```text
-   boot: NYTW monitor bring-up
-   status: board firmware is alive
-   ```
-
-5. Add one sensor at a time and watch its status change from `missing`, `timeout`, or `disabled`
-   to `ready`.
-
-Expected serial shape:
+Interactive commands while it is running:
 
 ```text
-sample_ms: 12000
-mcp9808: ready
-temp: 23.50 C / 74.30 F
-mpu6050: missing
-motion: missing
-hcsr04: timeout
-distance: timeout
-alert: warning reason=temperature warm
-csv,12000,ready,23.50,74.30,missing,,0,0,timeout,,0,0,warning,temperature warm
-i2c_scan: 0x18
+ping
+servo_test
+beep info
+beep warning
+beep critical
+quit
 ```
-
-CSV line fields:
-
-```text
-sample_ms,temp_status,temp_c,temp_f,motion_status,tilt_deg,tilt,spike,distance_status,distance_cm,presence,distance_changed,alert,reason
-```
-
-## Desktop Dashboard
-
-The repo includes a small local dashboard that reads the CSV serial lines and displays the latest
-sensor readings.
-
-Run it with:
-
-```bash
-python3 tools/serial_dashboard.py
-```
-
-Or specify the ST-LINK port directly:
-
-```bash
-python3 tools/serial_dashboard.py --port /dev/cu.usbmodem103 --baud 115200
-```
-
-The dashboard can save received samples as a CSV file.
 
 ## Wiring Notes
 

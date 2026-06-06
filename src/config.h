@@ -5,13 +5,6 @@
 namespace Config {
 constexpr uint32_t SerialBaud = 115200;
 
-constexpr bool EnableMcp9808 = true;
-constexpr bool EnableMpu6050 = true;
-constexpr bool EnableHcSr04 = true;
-constexpr bool EnableSpeaker = true;
-constexpr bool EnableI2cScan = true;
-constexpr bool EnableCsvOutput = true;
-
 constexpr uint8_t LedOkPin = LED_BUILTIN;
 constexpr uint8_t LedWarningPin = D5;
 constexpr uint8_t LedCriticalPin = D6;
@@ -27,6 +20,13 @@ constexpr float PresenceMinCm = 5.0f;
 constexpr float PresenceMaxCm = 55.0f;
 constexpr float DistanceChangeAlertCm = 15.0f;
 
+constexpr uint8_t ServoPin = D10;
+constexpr uint8_t ServoMinDeg = 0;
+constexpr uint8_t ServoMaxDeg = 180;
+constexpr uint8_t ServoStepDeg = 30;
+constexpr uint8_t ServoScanSteps = 12;
+constexpr uint16_t ServoSettleMs = 250;
+
 constexpr uint8_t SpeakerPin = D3;  // STEMMA speaker signal; see README wiring notes.
 
 constexpr uint8_t Mcp9808Address = 0x18;
@@ -37,8 +37,10 @@ constexpr uint8_t Mpu6050Address = 0x68;
 constexpr float TiltThresholdDeg = 40.0f;
 constexpr float SpikeThresholdG = 1.8f;
 
-constexpr uint32_t HeartbeatPeriodMs = 500;
-constexpr uint32_t ReportPeriodMs = 1000;
+constexpr uint32_t TempPeriodMs = 1000;
+constexpr uint32_t DistancePeriodMs = 250;
+constexpr uint32_t MotionPeriodMs = 100;
+constexpr uint32_t MonitorPeriodMs = 250;
+constexpr uint32_t TelemetryPeriodMs = 1000;
 constexpr uint32_t AlertCooldownMs = 1500;
-constexpr uint32_t I2cScanPeriodMs = 3000;
 }  // namespace Config
