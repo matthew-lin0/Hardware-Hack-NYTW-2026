@@ -60,6 +60,7 @@ constexpr bool EnableMpu6050 = true;
 constexpr bool EnableHcSr04 = true;
 constexpr bool EnableSpeaker = true;
 constexpr bool EnableI2cScan = true;
+constexpr bool EnableCsvOutput = true;
 ```
 
 ## Build
@@ -124,8 +125,34 @@ motion: missing
 hcsr04: timeout
 distance: timeout
 alert: warning reason=temperature warm
+csv,12000,ready,23.50,74.30,missing,,0,0,timeout,,0,0,warning,temperature warm
 i2c_scan: 0x18
 ```
+
+CSV line fields:
+
+```text
+sample_ms,temp_status,temp_c,temp_f,motion_status,tilt_deg,tilt,spike,distance_status,distance_cm,presence,distance_changed,alert,reason
+```
+
+## Desktop Dashboard
+
+The repo includes a small local dashboard that reads the CSV serial lines and displays the latest
+sensor readings.
+
+Run it with:
+
+```bash
+python3 tools/serial_dashboard.py
+```
+
+Or specify the ST-LINK port directly:
+
+```bash
+python3 tools/serial_dashboard.py --port /dev/cu.usbmodem103 --baud 115200
+```
+
+The dashboard can save received samples as a CSV file.
 
 ## Wiring Notes
 

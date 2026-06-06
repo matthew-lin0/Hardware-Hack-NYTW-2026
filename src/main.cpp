@@ -67,6 +67,27 @@ void printHexAddress(uint8_t address) {
   Serial.print(address, HEX);
 }
 
+void printCsvValue(float value, uint8_t decimals) {
+  if (isnan(value)) {
+    return;
+  }
+  Serial.print(value, decimals);
+}
+
+void printCsvBool(bool value) {
+  Serial.print(value ? "1" : "0");
+}
+
+void printCsvHeader() {
+  if (!Config::EnableCsvOutput) {
+    return;
+  }
+
+  Serial.println(
+      "csv_header,sample_ms,temp_status,temp_c,temp_f,motion_status,tilt_deg,tilt,spike,"
+      "distance_status,distance_cm,presence,distance_changed,alert,reason");
+}
+
 void printI2cScan(uint32_t nowMs) {
   if (!Config::EnableI2cScan || nowMs - lastI2cScanMs < Config::I2cScanPeriodMs) {
     return;
@@ -106,7 +127,10 @@ void printBootStatus() {
   Serial.println(enabledLabel(Config::EnableSpeaker));
   Serial.print("i2c_scan: ");
   Serial.println(enabledLabel(Config::EnableI2cScan));
+  Serial.print("csv_output: ");
+  Serial.println(enabledLabel(Config::EnableCsvOutput));
   Serial.println("status: board firmware is alive");
+  printCsvHeader();
 }
 
 void updateHeartbeat(uint32_t nowMs) {
@@ -220,6 +244,9 @@ void updateAlertOutputs(const AlertState& alert, uint32_t nowMs) {
 }
 
 void printReport(const SampleReport& report, const AlertState& alert, uint32_t nowMs) {
+  const float temperatureF = report.tempValid ? report.snapshot.temperatureC * 9.0f / 5.0f + 32.0f
+                                             : NAN;
+
   Serial.println();
   Serial.print("sample_ms: ");
   Serial.println(nowMs);
@@ -228,7 +255,6 @@ void printReport(const SampleReport& report, const AlertState& alert, uint32_t n
   Serial.println(report.tempStatus);
   Serial.print("temp: ");
   if (report.tempValid) {
-    const float temperatureF = report.snapshot.temperatureC * 9.0f / 5.0f + 32.0f;
     Serial.print(report.snapshot.temperatureC, 2);
     Serial.print(" C / ");
     Serial.print(temperatureF, 2);
@@ -276,6 +302,37 @@ void printReport(const SampleReport& report, const AlertState& alert, uint32_t n
   Serial.print(" reason=");
   Serial.println(alert.reason);
 
+  if (Config::EnableCsvOutput) {
+    Serial.print("csv,");
+    Serial.print(nowMs);
+    Serial.print(",");
+    Serial.print(report.tempStatus);
+    Serial.print(",");
+    printCsvValue(report.snapshot.temperatureC, 2);
+    Serial.print(",");
+    printCsvValue(temperatureF, 2);
+    Serial.print(",");
+    Serial.print(report.motionStatus);
+    Serial.print(",");
+    printCsvValue(report.motionValid ? report.motion.tiltDeg : NAN, 1);
+    Serial.print(",");
+    printCsvBool(report.motionValid && report.motion.tiltDetected);
+    Serial.print(",");
+    printCsvBool(report.motionValid && report.motion.spikeDetected);
+    Serial.print(",");
+    Serial.print(report.distanceStatus);
+    Serial.print(",");
+    printCsvValue(report.snapshot.distanceCm, 1);
+    Serial.print(",");
+    printCsvBool(report.distanceValid && report.snapshot.presenceDetected);
+    Serial.print(",");
+    printCsvBool(report.distanceValid && report.snapshot.distanceChanged);
+    Serial.print(",");
+    Serial.print(severityLabel(alert.severity));
+    Serial.print(",");
+    Serial.println(alert.reason);
+  }
+
   printI2cScan(nowMs);
 }
 }  // namespace
@@ -298,6 +355,7 @@ void setup() {
   Serial.print("boot: I2C bus initialized at ");
   Serial.print(Config::I2cClockHz);
   Serial.println(" Hz");
+  printCsvHeader();
 
   if (Config::EnableSpeaker) {
     speaker.begin(Config::SpeakerPin);

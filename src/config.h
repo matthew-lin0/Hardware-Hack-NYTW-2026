@@ -10,6 +10,7 @@ constexpr bool EnableMpu6050 = true;
 constexpr bool EnableHcSr04 = true;
 constexpr bool EnableSpeaker = true;
 constexpr bool EnableI2cScan = true;
+constexpr bool EnableCsvOutput = true;
 
 constexpr uint8_t LedOkPin = LED_BUILTIN;
 constexpr uint8_t LedWarningPin = D5;
