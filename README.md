@@ -48,6 +48,7 @@ electronics, wires, batteries, and small parts outside any crib or sleep area.
 - MPU-6050 detects tilt at 40 degrees and acceleration spikes.
 - HC-SR04 marks the presence zone active when something is within 5-55 cm.
 - Speaker plays info, warning, and critical tone patterns when enabled.
+- Speaker output is explicitly silenced when the alert state clears.
 - `baby_monitor` ranks alerts so critical conditions win over warning and info states.
 
 Edit pins, thresholds, feature flags, and report timing in `src/config.h`.

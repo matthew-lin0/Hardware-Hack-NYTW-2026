@@ -160,6 +160,13 @@ void sampleTemperature(SampleReport& report) {
   float temperatureC = NAN;
   if (!tempSensor.readTemperatureC(temperatureC)) {
     report.tempStatus = "read_error";
+    tempReady = false;
+    return;
+  }
+
+  if (temperatureC < -40.0f || temperatureC > 125.0f) {
+    report.tempStatus = "out_of_range";
+    tempReady = false;
     return;
   }
 
@@ -230,7 +237,15 @@ void updateAlertOutputs(const AlertState& alert, uint32_t nowMs) {
   digitalWrite(Config::LedWarningPin, showWarning ? HIGH : LOW);
   digitalWrite(Config::LedCriticalPin, alert.severity == AlertSeverity::Critical ? HIGH : LOW);
 
-  if (!Config::EnableSpeaker || alert.severity == AlertSeverity::None) {
+  if (alert.severity == AlertSeverity::None) {
+    if (Config::EnableSpeaker && lastAlertSeverity != AlertSeverity::None) {
+      speaker.play(AlertSeverity::None);
+    }
+    lastAlertSeverity = AlertSeverity::None;
+    return;
+  }
+
+  if (!Config::EnableSpeaker) {
     lastAlertSeverity = alert.severity;
     return;
   }

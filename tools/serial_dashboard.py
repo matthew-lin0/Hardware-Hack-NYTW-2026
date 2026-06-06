@@ -60,6 +60,14 @@ def parse_csv_line(line: str) -> dict[str, str] | None:
     return dict(zip(CSV_FIELDS, values))
 
 
+def display_value(value: str, status: str | None = None) -> str:
+    if value:
+        return value
+    if status and status not in {"ready", ""}:
+        return status
+    return "-"
+
+
 class SerialReader(threading.Thread):
     def __init__(self, port: str, baud: int, events: "queue.Queue[tuple[str, object]]") -> None:
         super().__init__(daemon=True)
@@ -169,16 +177,23 @@ class Dashboard:
     def update_sample(self, sample: dict[str, str]) -> None:
         self.samples.append({"wall_time": f"{time.time():.3f}", **sample})
         for field, value in sample.items():
-            self.vars[field].set(value or "-")
+            if field in {"temp_c", "temp_f"}:
+                self.vars[field].set(display_value(value, sample.get("temp_status")))
+            elif field == "tilt_deg":
+                self.vars[field].set(display_value(value, sample.get("motion_status")))
+            elif field == "distance_cm":
+                self.vars[field].set(display_value(value, sample.get("distance_status")))
+            else:
+                self.vars[field].set(display_value(value))
 
         self.log.insert(
             "",
             0,
             values=(
                 sample.get("sample_ms", ""),
-                sample.get("temp_c", ""),
+                display_value(sample.get("temp_c", ""), sample.get("temp_status")),
                 sample.get("alert", ""),
-                sample.get("distance_cm", ""),
+                display_value(sample.get("distance_cm", ""), sample.get("distance_status")),
             ),
         )
         for item in self.log.get_children()[250:]:

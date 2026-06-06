@@ -27,7 +27,7 @@ constexpr float PresenceMinCm = 5.0f;
 constexpr float PresenceMaxCm = 55.0f;
 constexpr float DistanceChangeAlertCm = 15.0f;
 
-constexpr uint8_t SpeakerPin = D3;
+constexpr uint8_t SpeakerPin = D3;  // STEMMA speaker signal; see README wiring notes.
 
 constexpr uint8_t Mcp9808Address = 0x18;
 constexpr float TempWarningC = 22.0f;
