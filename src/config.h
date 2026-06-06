@@ -16,6 +16,13 @@ constexpr float PresenceMinCm = 5.0f;
 constexpr float PresenceMaxCm = 55.0f;
 constexpr float DistanceChangeAlertCm = 15.0f;
 
+constexpr uint8_t ServoPin = D10;
+constexpr uint8_t ServoMinDeg = 0;
+constexpr uint8_t ServoMaxDeg = 180;
+constexpr uint8_t ServoStepDeg = 30;
+constexpr uint8_t ServoScanSteps = 12;
+constexpr uint16_t ServoSettleMs = 250;
+
 constexpr uint8_t SpeakerPin = D3;
 
 constexpr uint8_t Mcp9808Address = 0x18;
@@ -30,6 +37,6 @@ constexpr uint32_t TempPeriodMs = 1000;
 constexpr uint32_t DistancePeriodMs = 250;
 constexpr uint32_t MotionPeriodMs = 100;
 constexpr uint32_t MonitorPeriodMs = 250;
+constexpr uint32_t TelemetryPeriodMs = 1000;
 constexpr uint32_t AlertCooldownMs = 1500;
 }  // namespace Config
-
